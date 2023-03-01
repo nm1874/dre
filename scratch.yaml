@@ -1,0 +1,39 @@
+defaults:
+  - override hydra/launcher: submitit_slurm
+
+total_steps: 100000
+mu_p: 0.
+sigma_p: 0.0001
+mu_q: 0.
+sigma_q: 1.
+device: cuda
+use_wandb: True
+data_size: 100000
+batch_size: 1000
+lr: 0.0001
+eps: 0.00001
+input_dim: 1
+hidden_dim: 128
+random_sample: True
+curriculum: False
+power_scale: 1
+t: 1
+use_alpha_gamma: False
+single_classifier: False
+regularize: False
+regularize_coef: 1
+
+hydra:
+  run:
+    dir: ./exp_local/${now:%Y.%m.%d}/${now:%H%M%S}_dre
+  sweep:
+    dir: ./exp_sweep/${now:%Y.%m.%d}/${now:%H%M}_dre
+    subdir: ${hydra.job.num}
+  launcher:
+    timeout_min: 4300
+    cpus_per_task: 16
+    gpus_per_node: 1
+    tasks_per_node: 1
+    mem_gb: 200
+    nodes: 1
+    submitit_folder: ./exp_sweep/${now:%Y.%m.%d}/${now:%H%M}_dre/.slurm
