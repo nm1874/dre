@@ -61,12 +61,10 @@ class QuadraticHead(torch.nn.Module):
     def forward(self, t, alpha=None, gamma=None):
         t_sq = t**2
         if self.use_alpha_gamma:
-            x = torch.tensor([t, t_sq, alpha, gamma], device=self.device)
-            #x = torch.cat([t, t_sq, alpha, gamma], dim=-1)
+            x = torch.cat([t.unsqueeze(-1), t_sq.unsqueeze(-1), alpha.unsqueeze(-1), gamma.unsqueeze(-1)], dim=-1).to(self.device)
         else:
-            x = torch.tensor([t, t_sq], device=self.device)
-            #x = torch.cat([t, t_sq], dim=-1)
-        
+            x = torch.cat([t.unsqueeze(-1), t_sq.unsqueeze(-1)], dim=-1).to(self.device)
+
         A2 = self.quadratic(x)
         if self.use_linear_term:
             A1 = self.linear(x)
@@ -127,7 +125,7 @@ class SDE:
 
     def transition_mean_coefficient_like(self, x, t):
         coef = self.transition_mean_coefficient(t)
-        coef = torch.ones_like(x)*coef
+        coef = torch.mul(torch.ones_like(x), coef)
         assert x.shape==coef.shape
         return coef
 
@@ -204,7 +202,6 @@ class Workspace:
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=cfg.lr)
         self.error = np.zeros((4, 1000,))
-        self.time = np.empty((1,))
         self.loss_t = np.empty((1,))
         self.count = 0
         self.log_nu = 0 
@@ -292,7 +289,7 @@ class Workspace:
                 x = x.reshape((x.shape[0],1)).to(self.cfg.device)
                 y = y.reshape((y.shape[0],1)).to(self.cfg.device)
 
-                xt= self.sde.sample_from_transition_kernel(x, it, eval=True)
+                xt= self.sde.sample_from_transition_kernel(x.squeeze(1), it, eval=True).unsqueeze(-1)
                 x_p = xt[y==1.]
                 x_q = xt[y==0.]
                 sum_p += torch.mean(x_p).detach().cpu().numpy()
@@ -437,9 +434,8 @@ class Workspace:
         plt.clf()
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.set_title('loss over time')
-        tmp_array = np.array([[self.time, self.loss_t]]).squeeze(0)
+        tmp_array = np.array([[np.linspace(0,global_step,self.loss_t.shape[0]), self.loss_t]]).squeeze(0)
         print('tmp_array', tmp_array.shape)
-        print('self.time', self.time)
         print('self.loss_t', self.loss_t)
         tmp_array = tmp_array[:,tmp_array[0].argsort()[::-1]]
         ax.plot(tmp_array[0], tmp_array[1], label='loss')
@@ -628,16 +624,15 @@ class Workspace:
 
             if self.cfg.single_classifier is False:
                 if self.cfg.random_sample:
-                    t = torch.rand(1).to(self.cfg.device)
-                    t1 = torch.rand(1).to(self.cfg.device)
+                    #TODO: different t's in each batch sample (not just one t for the whole batch)
+                    t = torch.rand(size=(x.shape[0],)).to(self.cfg.device)
+                    t1 = torch.rand(size=(x.shape[0],)).to(self.cfg.device)
                 elif self.cfg.curriculum:
                     t = torch.clip(torch.pow(torch.tensor([(1 - self.global_step / self.cfg.total_steps)*(1-self.eps)]), self.cfg.power_scale).to(self.cfg.device), 0, .99)
-                else:
-                    t = torch.tensor([self.cfg.t]).to(self.cfg.device)
 
-                xt= self.sde.sample_from_transition_kernel(x, t)
+                xt= self.sde.sample_from_transition_kernel(x.squeeze(1), t)
                 if self.cfg.random_sample:
-                    xt1= self.sde.sample_from_transition_kernel(x, t1)
+                    xt1= self.sde.sample_from_transition_kernel(x.squeeze(1), t1)
             else:
                 t = None
                 xt = x
@@ -655,13 +650,12 @@ class Workspace:
                         theta_est2_1, theta_est0_1 = self.model(t1)
                 else:
                     theta_est2, theta_est0 = self.model()
-
+                
                 log_odds = theta_est0 - torch.exp(theta_est2)*(xt**2)
                 if self.cfg.regularize:
                     log_odds_1 = theta_est0_1 - torch.exp(theta_est2_1)*(xt1**2)
                 
             else:
-
                 if self.cfg.use_alpha_gamma:
                     theta_est2, theta_est1, theta_est0 = self.model(t, alpha = self.sde.alpha(t), gamma = self.sde.gamma(t))
                     if self.cfg.regularize:
@@ -673,10 +667,9 @@ class Workspace:
                 else:
                     theta_est2, theta_est1, theta_est0 = self.model()
 
-                log_odds = theta_est0 + torch.exp(theta_est1)*xt - torch.exp(theta_est2)*(xt**2)
+                log_odds = theta_est0 + torch.exp(theta_est1)*xt.unsqueeze(1) - torch.exp(theta_est2)*(xt.unsqueeze(1)**2)
                 if self.cfg.regularize:
                     log_odds_1 = theta_est0_1 + torch.exp(theta_est1_1)*xt - torch.exp(theta_est2_1)*(xt**2)
-
             log_odds_p = log_odds[y==1.]
             log_odds_q = log_odds[y==0.]
 
@@ -703,8 +696,6 @@ class Workspace:
             if self.global_step % (self.cfg.total_steps//100) == 0:
                 self.loss_t = np.append(self.loss_t, loss.item())
                 print('self.ls', self.loss_t.shape)
-                if self.cfg.single_classifier is False:
-                    self.time = np.append(self.time, t.item())
             metrics = {'loss': loss}
             
             if self.cfg.use_wandb:
