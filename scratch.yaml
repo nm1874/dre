@@ -22,6 +22,7 @@ use_alpha_gamma: False
 single_classifier: False
 regularize: False
 regularize_coef: 1
+theta1_use_exp: False
 
 hydra:
   run:

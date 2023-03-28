@@ -40,6 +40,10 @@ class QuadraticHead(torch.nn.Module):
         if self.use_linear_term:
             self.linear = nn.Sequential(nn.Linear(self.input_dim, self.hidden_dim),
                                        nn.ReLU(),
+                                       nn.Linear(self.hidden_dim, self.hidden_dim*2),
+                                       nn.ReLU(),
+                                       nn.Linear(self.hidden_dim*2, self.hidden_dim),
+                                       nn.ReLU(),
                                        nn.Linear(self.hidden_dim, self.hidden_dim//2),
                                        nn.ReLU(),
                                        nn.Linear(self.hidden_dim//2, self.hidden_dim//4),
@@ -48,9 +52,11 @@ class QuadraticHead(torch.nn.Module):
         
         self.bias = nn.Sequential(nn.Linear(self.input_dim, self.hidden_dim),
                                        nn.ReLU(),
-                                       nn.Linear(self.hidden_dim, self.hidden_dim//2),
+                                       nn.Linear(self.hidden_dim, self.hidden_dim),
                                        nn.ReLU(),
-                                       nn.Linear(self.hidden_dim//2, 1, bias=False))
+                                       nn.Linear(self.hidden_dim, self.hidden_dim//4),
+                                       nn.ReLU(),
+                                       nn.Linear(self.hidden_dim//4, 1, bias=False))
 
         self.quadratic.train(True)
         self.bias.train(True)
@@ -188,7 +194,7 @@ class Workspace:
         self.eps = cfg.eps
         self.sde = SDE()
 
-        if self.cfg.mu_p!=0. or self.cfg.mu_q!=0.:
+        if (self.cfg.mu_p!=0. or self.cfg.mu_q!=0.) and (self.cfg.sigma_p != self.cfg.sigma_q) :
             print('mu_p is not 0, using linear term', self.cfg.mu_p)
             print('mu_q is not 0, using linear term', self.cfg.mu_q)
             linear = True
@@ -261,7 +267,7 @@ class Workspace:
     def eval(self, global_step):
         self.model.eval()
         if self.cfg.single_classifier is False:
-            t = torch.linspace(0.0000001,1,1000).to(self.cfg.device)
+            t = torch.linspace(0.,1.,1000).to(self.cfg.device)
         else:
             t = torch.tensor([0]).to(self.cfg.device)
         
@@ -309,7 +315,7 @@ class Workspace:
 
 
             theta_true2 = -1/(2*(self.sde.gamma(it)+(self.sde.alpha(it)**2)*(sigma_p**2))) + 1/(2*(self.sde.gamma(it)+(self.sde.alpha(it)**2)*(sigma_q**2)))
-            theta_true1 = (self.sde.alpha(it)*self.cfg.mu_p)/(2*(self.sde.gamma(it)+(self.sde.alpha(it)**2)*(sigma_p**2))) - (self.sde.alpha(it)*self.cfg.mu_q)/(2*(self.sde.gamma(it)+(self.sde.alpha(it)**2)*(sigma_q**2)))
+            theta_true1 = 2*(self.sde.alpha(it)*self.cfg.mu_p)/(2*(self.sde.gamma(it)+(self.sde.alpha(it)**2)*(sigma_p**2))) - (self.sde.alpha(it)*self.cfg.mu_q)/(2*(self.sde.gamma(it)+(self.sde.alpha(it)**2)*(sigma_q**2)))
             theta_true0 = np.log(sigma_q) - np.log(sigma_p) -(self.sde.alpha(it)*self.cfg.mu_p)**2/(2*(self.sde.gamma(it)+(self.sde.alpha(it)**2)*(sigma_p**2))) + (self.sde.alpha(it)*self.cfg.mu_q)/(2*(self.sde.gamma(it)+(self.sde.alpha(it)**2)*(sigma_q**2)))
             log_ratios = theta_true0 + theta_true1*xt + theta_true2*(xt**2)
 
@@ -321,26 +327,50 @@ class Workspace:
                     else:
                         theta_est2, theta_est0 = self.model(it)
 
-                    log_odds = theta_est0 + theta_est2*(xt**2)
-                    # print('theta2 true', theta_true2)
-                    # print('theta2 est', theta_est2)
-                    # print('theta0 true', theta_true0)
-                    # print('theta0 est', theta_est0)
+                    log_odds = theta_est0 - torch.exp(theta_est2)*(xt**2)
+                    print('theta2 true', theta_true2)
+                    print('theta2 est', -torch.exp(theta_est2))
+                    print('theta0 true', theta_true0)
+                    print('theta0 est', theta_est0)
+                elif self.cfg.sigma_p == self.cfg.sigma_q:
+
+                    if self.cfg.use_alpha_gamma:
+                        theta_est1, theta_est0 = self.model(it, alpha = self.sde.alpha(it), gamma = self.sde.gamma(it))
+                    else:
+                        theta_est1, theta_est0 = self.model(it)
+
+                    if self.cfg.theta1_use_exp:
+                        log_odds = theta_est0 + torch.exp(theta_est1)*xt
+                    else:
+                        log_odds = theta_est0 + theta_est1*xt
+                    print('theta1 true', theta_true1)
+                    if self.cfg.theta1_use_exp:
+                        print('theta1 est', torch.exp(theta_est1))
+                    else:
+                        print('theta1 est', theta_est1)
+                    print('theta0 true', theta_true0)
+                    print('theta0 est', theta_est0)
+
 
                 else:
                     if self.cfg.use_alpha_gamma:
                         theta_est2, theta_est1, theta_est0 = self.model(it, alpha = self.sde.alpha(it), gamma = self.sde.gamma(it))
                     else:
                         theta_est2, theta_est1, theta_est0 = self.model(it)
-
-                    log_odds = theta_est0 + theta_est1*xt + theta_est2*(xt**2)
+                    if self.cfg.theta1_use_exp:
+                        log_odds = theta_est0 + torch.exp(theta_est1)*xt -torch.exp(theta_est2)*(xt**2)
+                    else:
+                        log_odds = theta_est0 + theta_est1*xt -torch.exp(theta_est2)*(xt**2)
             
-                    # print('theta2 true', theta_true2)
-                    # print('theta2 est', theta_est2)
-                    # print('theta1 true', theta_true1)
-                    # print('theta1 est', theta_est1)
-                    # print('theta0 true', theta_true0)
-                    # print('theta0 est', theta_est0)
+                    print('theta2 true', theta_true2)
+                    print('theta2 est', -torch.exp(theta_est2))
+                    print('theta1 true', theta_true1)
+                    if self.cfg.theta1_use_exp:
+                        print('theta1 est', torch.exp(theta_est1))
+                    else:
+                        print('theta1 est', theta_est1)
+                    print('theta0 true', theta_true0)
+                    print('theta0 est', theta_est0)
         
             evaluated = np.concatenate([xt.detach().cpu().numpy(), log_ratios.detach().cpu().numpy(), log_odds.detach().cpu().numpy()], axis=-1)
             evaluated = evaluated[evaluated[:,0].argsort()]
@@ -351,11 +381,16 @@ class Workspace:
             err = np.log(sum(abs(log_odds - log_ratios)))
             self.error[0,i] = err
 
-            err_theta2 = abs(torch.log(theta_true2) - theta_est2)
-            self.error[1,i] = err_theta2
+            if self.cfg.sigma_p != self.cfg.sigma_q:
+                err_theta2 = abs(torch.log(-theta_true2) - theta_est2)
+                self.error[1,i] = err_theta2
 
             if self.cfg.mu_p != 0. or self.cfg.mu_q != 0.:
-                err_theta1 = abs(torch.log(theta_true1) - theta_est1)
+                if self.cfg.theta1_use_exp:
+                    err_theta1 = abs(torch.log(theta_true1) - theta_est1)
+                else:
+                    err_theta1 = abs(theta_true1 - theta_est1)
+                print('err theta1', err_theta1)
                 self.error[2,i] = err_theta1
 
             err_theta0 = abs(theta_true0 - theta_est0)
@@ -372,6 +407,8 @@ class Workspace:
                 ax.set_ylabel('$log ratio$')
                 if self.cfg.mu_p == 0. and self.cfg.mu_q == 0.:
                     ax.set_title(f"err_theta2{err_theta2.detach().cpu().numpy().round(3)}, err_theta0{err_theta0.detach().cpu().numpy().round(3)}")
+                elif self.cfg.sigma_p == self.cfg.sigma_q:
+                    ax.set_title(f"err_theta1{err_theta1.detach().cpu().numpy().round(3)}, err_theta0{err_theta0.detach().cpu().numpy().round(3)}")
                 else:
                     ax.set_title(f"err_theta2{err_theta2.detach().cpu().numpy().round(3)}, err_theta1{err_theta1.detach().cpu().numpy().round(3)}, err_theta0{err_theta0.detach().cpu().numpy().round(3)}")
 
@@ -411,7 +448,7 @@ class Workspace:
         #ax.set_ylim(0., 1.)
         ax.set_ylabel('$log_error$')
 
-        ax.legend()
+        # ax.legend()
 
         plt.savefig(f"./{global_step}_error_log_dr.png")
         wandb.save(f"./{global_step}_error_log_dr.png")
@@ -420,14 +457,16 @@ class Workspace:
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.set_title('error over time')
         # print('err', err)
-        ax.plot(np.linspace(0,1,self.error.shape[1]), self.error[1], label='theta2 error')
+        if self.cfg.sigma_p != self.cfg.sigma_q:
+            ax.plot(np.linspace(0,1,self.error.shape[1]), self.error[1], label='theta2 error')
         if self.cfg.mu_p != 0. or self.cfg.mu_q != 0.:
             ax.plot(np.linspace(0,1,self.error.shape[1]), self.error[2], label='theta1 error')
+
         ax.plot(np.linspace(0,1,self.error.shape[1]), self.error[3], label='thetha0 error')
         ax.legend(np.linspace(0,1,self.error.shape[1])[::-1], title='$t$')
         ax.set_xlabel('$t$')
         ax.set_ylabel('$abs_error$')
-        ax.legend()
+        # ax.legend()
         plt.savefig(f"./{global_step}_coeff_errors.png")
         wandb.save(f"./{global_step}_coeff_errors.png")
 
@@ -444,6 +483,8 @@ class Workspace:
         ax.legend()
         plt.savefig(f"./{global_step}_loss.png")
         wandb.save(f"./{global_step}_loss.png")
+
+        self.model.train()
     
     def eval_single(self):
         self.model.eval()
@@ -475,9 +516,8 @@ class Workspace:
         x = x.reshape((x.shape[0],1)).to(self.cfg.device)
         y = y.reshape((y.shape[0],1)).to(self.cfg.device)
 
-
         theta_true2 = 1/(2*sigma_q**2)- 1/(2*sigma_p**2)
-        theta_true1 = -mu_q/(2*sigma_q**2)+ mu_p/(2*sigma_p**2)
+        theta_true1 = 2*(-mu_q/(2*sigma_q**2)+ mu_p/(2*sigma_p**2))
         theta_true0 = np.log(sigma_q) - np.log(sigma_p) + mu_q**2/(2*sigma_q**2)- mu_p**2/(2*sigma_p**2)
         log_ratios = theta_true0 + theta_true1*x + theta_true2*(x**2)
 
@@ -489,16 +529,34 @@ class Workspace:
                 print('theta2 est single', -torch.exp(theta_est2))
                 print('theta0 true single', theta_true0)
                 print('theta0 est single', theta_est0)
+            
+            elif self.cfg.sigma_p == self.cfg.sigma_q:
+                theta_est1, theta_est0 = self.model()
+                if self.cfg.theta1_use_exp:
+                    log_odds = theta_est0 + torch.exp(theta_est1)*x
+                else:
+                    log_odds = theta_est0 +theta_est1*(x)
+                print('theta1 true single', theta_true1)
+                print('theta1 est single', theta_est1)
+                print('theta0 true single', theta_true0)
+                print('theta0 est single', theta_est0)
 
             else:
                 theta_est2, theta_est1, theta_est0 = self.model()
 
-                log_odds = theta_est0 + torch.exp(theta_est1)*x - torch.exp(theta_est2)*(x**2)
+                if self.cfg.theta1_use_exp:
+                    
+                    log_odds = theta_est0 + torch.exp(theta_est1)*x - torch.exp(theta_est2)*(x**2)
+                else:
+                    log_odds = theta_est0 + theta_est1*x - torch.exp(theta_est2)*(x**2)
         
                 print('theta2 true single', theta_true2)
                 print('theta2 est single', -torch.exp(theta_est2))
                 print('theta1 true single', theta_true1)
-                print('theta1 est single', torch.exp(theta_est1))
+                if self.cfg.theta1_use_exp:
+                    print('theta1 est single', torch.exp(theta_est1))
+                else:
+                    print('theta1 est single', theta_est1)
                 print('theta0 true single', theta_true0)
                 print('theta0 est single', theta_est0)
     
@@ -592,7 +650,7 @@ class Workspace:
             plt.savefig(f"./{self.global_step}_loss.png")
             wandb.save(f"./{self.global_step}_loss.png")
 
-
+        self.model.train()
 
     def train(self):
 
@@ -651,10 +709,34 @@ class Workspace:
                 else:
                     theta_est2, theta_est0 = self.model()
                 
-                log_odds = theta_est0 - torch.exp(theta_est2)*(xt**2)
+                log_odds = theta_est0 - torch.exp(theta_est2)*(xt.unsqueeze(-1)**2)
                 if self.cfg.regularize:
-                    log_odds_1 = theta_est0_1 - torch.exp(theta_est2_1)*(xt1**2)
+                    log_odds_1 = theta_est0_1 - torch.exp(theta_est2_1)*(xt1.unsqueeze(1)**2)
+
+            elif self.cfg.sigma_p == self.cfg.sigma_q:
+
+                if self.cfg.use_alpha_gamma:
+                    theta_est1, theta_est0 = self.model(t, alpha = self.sde.alpha(t), gamma = self.sde.gamma(t))
+                    if self.cfg.regularize:
+                        theta_est1_1, theta_est0_1 = self.model(t1, alpha = self.sde.alpha(t1), gamma = self.sde.gamma(t1))
+
+                elif self.cfg.single_classifier is False:
+                    theta_est1, theta_est0 = self.model(t)
+                    if self.cfg.regularize:
+                        theta_est1_1, theta_est0_1 = self.model(t1)
+                else:
+                    theta_est1, theta_est0 = self.model()
                 
+                if self.cfg.theta1_use_exp:
+                    log_odds = theta_est0 + torch.exp(theta_est1)*(xt.unsqueeze(1))
+                else:
+                    log_odds = theta_est0 + theta_est1*(xt.unsqueeze(1))
+
+                if self.cfg.regularize:
+                    if self.cfg.theta1_use_exp:
+                        log_odds_1 = theta_est0_1 + torch.exp(theta_est1)*(xt.unsqueeze(1))
+                    else:
+                        log_odds_1 = theta_est0_1 + theta_est1*(xt.unsqueeze(1))
             else:
                 if self.cfg.use_alpha_gamma:
                     theta_est2, theta_est1, theta_est0 = self.model(t, alpha = self.sde.alpha(t), gamma = self.sde.gamma(t))
@@ -667,9 +749,17 @@ class Workspace:
                 else:
                     theta_est2, theta_est1, theta_est0 = self.model()
 
-                log_odds = theta_est0 + torch.exp(theta_est1)*xt.unsqueeze(1) - torch.exp(theta_est2)*(xt.unsqueeze(1)**2)
+                if self.cfg.theta1_use_exp:
+                    log_odds = theta_est0 + torch.exp(theta_est1)*xt.unsqueeze(1) - torch.exp(theta_est2)*(xt.unsqueeze(1)**2)
+                else:
+                    log_odds = theta_est0 + theta_est1*xt.unsqueeze(1) - theta_est2*(xt.unsqueeze(1)**2)
+
                 if self.cfg.regularize:
-                    log_odds_1 = theta_est0_1 + torch.exp(theta_est1_1)*xt - torch.exp(theta_est2_1)*(xt**2)
+                    if self.cfg.theta1_use_exp:
+                        log_odds_1 = theta_est0_1 + torch.exp(theta_est1_1)*xt.unsqueeze(1) - torch.exp(theta_est2_1)*(xt.unsqueeze(1)**2)
+                    else:
+                        log_odds_1 = theta_est0_1 + theta_est1_1*xt.unsqueeze(1) - theta_est2_1*(xt.unsqueeze(1)**2)
+
             log_odds_p = log_odds[y==1.]
             log_odds_q = log_odds[y==0.]
 
@@ -688,12 +778,16 @@ class Workspace:
                 loss = -torch.mean(term1) - torch.mean(term2)
             else:
                 kl = -torch.sum(torch.sigmoid(log_odds)*torch.log(torch.sigmoid(log_odds)/(torch.sigmoid(log_odds_1))))
-                # print('kl', kl)
-                # print('reg', abs(self.cfg.regularize_coef/(t-t1)*(kl)))
-                loss = -torch.mean(term1) - torch.mean(term2) + abs(self.cfg.regularize_coef/(t-t1)*(kl))
+                
+                loss = -torch.mean(term1) - torch.mean(term2) + torch.mean(abs(self.cfg.regularize_coef/(t-t1)*(kl)))
 
 
             if self.global_step % (self.cfg.total_steps//100) == 0:
+                # print('sigmoid log odds', torch.sigmoid(log_odds))
+                # print('sigmoid log odds_1', torch.sigmoid(log_odds_1))
+                # print('kl', kl)
+                # print('reg', abs(self.cfg.regularize_coef/(t-t1)*(kl)))
+                # print('loss', loss)
                 self.loss_t = np.append(self.loss_t, loss.item())
                 print('self.ls', self.loss_t.shape)
             metrics = {'loss': loss}
@@ -719,7 +813,7 @@ class Workspace:
                 if self.global_step % 100 == 0:
                     self.eval_single()
             else:
-                if self.global_step % 2000 == 0:
+                if self.global_step % 10000 == 0:
                     self.eval(self.global_step)
         if self.cfg.single_classifier is False:
             self.eval(self.global_step)
